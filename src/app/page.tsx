@@ -1,3 +1,7 @@
+"use client";
+
+import { useEffect, useState } from "react";
+
 type IconName = "home" | "dumbbell" | "food" | "chart" | "sparkles" | "plus" | "flame" | "clock" | "chevron";
 
 function Icon({ name, size = 20 }: { name: IconName; size?: number }) {
@@ -26,6 +30,37 @@ const days = [
 ];
 
 export default function Home() {
+  const [showSetup, setShowSetup] = useState(false);
+  const [showLog, setShowLog] = useState(false);
+  const [logType, setLogType] = useState<"weight" | "meal" | "workout">("weight");
+  const [savedMessage, setSavedMessage] = useState("");
+
+  useEffect(() => {
+    const checkProfile = window.setTimeout(() => {
+      setShowSetup(!window.localStorage.getItem("blackout-profile"));
+    }, 0);
+    return () => window.clearTimeout(checkProfile);
+  }, []);
+
+  function finishSetup(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(event.currentTarget));
+    window.localStorage.setItem("blackout-profile", JSON.stringify(data));
+    setShowSetup(false);
+    setSavedMessage("Your plan is ready.");
+    window.setTimeout(() => setSavedMessage(""), 2400);
+  }
+
+  function saveLog(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const entry = { type: logType, date: new Date().toISOString(), ...Object.fromEntries(new FormData(event.currentTarget)) };
+    const logs = JSON.parse(window.localStorage.getItem("blackout-logs") ?? "[]") as object[];
+    window.localStorage.setItem("blackout-logs", JSON.stringify([entry, ...logs]));
+    setShowLog(false);
+    setSavedMessage(`${logType[0].toUpperCase()}${logType.slice(1)} saved.`);
+    window.setTimeout(() => setSavedMessage(""), 2400);
+  }
+
   return (
     <div className="app-shell">
       <aside className="side-nav">
@@ -44,7 +79,7 @@ export default function Home() {
       <main id="top" className="dashboard">
         <header className="topbar">
           <div><p className="eyebrow">TUESDAY, AUGUST 13</p><h1>Good morning, Darius.</h1><p className="subtitle">Small choices. Serious results. Keep the cut moving.</p></div>
-          <button className="primary-button"><Icon name="plus" size={18}/> Log activity</button>
+          <button className="primary-button" onClick={() => setShowLog(true)}><Icon name="plus" size={18}/> Log activity</button>
         </header>
 
         <section className="week-strip" aria-label="Current week">
@@ -63,18 +98,24 @@ export default function Home() {
             <div className="panel-heading"><div><p className="eyebrow">TODAY&apos;S TRAINING</p><h2>Push day</h2></div><button className="text-button">View plan <Icon name="chevron" size={15}/></button></div>
             <div className="workout-visual"><div className="visual-copy"><span>CHEST · SHOULDERS · TRICEPS</span><strong>Upper body<br/>power</strong><div><span><Icon name="clock" size={16}/> 55 min</span><span><Icon name="dumbbell" size={16}/> 7 exercises</span></div></div><div className="plate plate-one"/><div className="plate plate-two"/><div className="barbell"/></div>
             <div className="exercise-list"><div><b>01</b><span><strong>Barbell bench press</strong><small>4 sets · 6–8 reps</small></span></div><div><b>02</b><span><strong>Incline dumbbell press</strong><small>3 sets · 8–10 reps</small></span></div><div><b>03</b><span><strong>Standing overhead press</strong><small>3 sets · 8–10 reps</small></span></div></div>
-            <button className="start-button"><Icon name="dumbbell" size={19}/> Start workout</button>
+            <button className="start-button" onClick={() => { setLogType("workout"); setShowLog(true); }}><Icon name="dumbbell" size={19}/> Start workout</button>
           </article>
 
           <div className="right-column">
             <article id="coach" className="panel coach-panel"><div className="coach-icon"><Icon name="sparkles"/></div><div><p className="eyebrow">BLACKOUT AI COACH</p><h2>You&apos;re trending ahead.</h2><p>Your weight is dropping at 1.2 lb per week—right in the target zone. Keep calories steady today and prioritize sleep tonight.</p><button className="text-button light">Ask your coach <Icon name="chevron" size={15}/></button></div></article>
-            <article id="nutrition" className="panel nutrition-panel"><div className="panel-heading"><div><p className="eyebrow">NUTRITION</p><h2>Today&apos;s macros</h2></div><button className="icon-button" aria-label="Add meal"><Icon name="plus" size={18}/></button></div><div className="macro"><span>Carbs <b>138 / 210g</b></span><div><i style={{width:"66%"}}/></div></div><div className="macro fat"><span>Fat <b>48 / 70g</b></span><div><i style={{width:"69%"}}/></div></div><div className="macro protein"><span>Protein <b>112 / 180g</b></span><div><i style={{width:"62%"}}/></div></div><button className="meal-button"><Icon name="plus" size={16}/> Add meal</button></article>
+            <article id="nutrition" className="panel nutrition-panel"><div className="panel-heading"><div><p className="eyebrow">NUTRITION</p><h2>Today&apos;s macros</h2></div><button className="icon-button" aria-label="Add meal" onClick={() => { setLogType("meal"); setShowLog(true); }}><Icon name="plus" size={18}/></button></div><div className="macro"><span>Carbs <b>138 / 210g</b></span><div><i style={{width:"66%"}}/></div></div><div className="macro fat"><span>Fat <b>48 / 70g</b></span><div><i style={{width:"69%"}}/></div></div><div className="macro protein"><span>Protein <b>112 / 180g</b></span><div><i style={{width:"62%"}}/></div></div><button className="meal-button" onClick={() => { setLogType("meal"); setShowLog(true); }}><Icon name="plus" size={16}/> Add meal</button></article>
             <article id="progress" className="panel progress-panel"><div className="panel-heading"><div><p className="eyebrow">7-DAY PROGRESS</p><h2>Down 1.4 lb</h2></div><span className="trend">On track</span></div><div className="chart"><span className="line"/><i style={{left:"2%",top:"8%"}}/><i style={{left:"18%",top:"22%"}}/><i style={{left:"34%",top:"33%"}}/><i style={{left:"50%",top:"45%"}}/><i style={{left:"66%",top:"57%"}}/><i style={{left:"82%",top:"68%"}}/><i style={{left:"97%",top:"82%"}}/></div><div className="chart-labels"><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span><span>M</span><span>T</span></div></article>
           </div>
         </section>
       </main>
 
-      <nav className="mobile-nav" aria-label="Mobile navigation"><a className="active" href="#top"><Icon name="home"/><span>Home</span></a><a href="#workout"><Icon name="dumbbell"/><span>Train</span></a><button aria-label="Log activity"><Icon name="plus"/></button><a href="#nutrition"><Icon name="food"/><span>Food</span></a><a href="#progress"><Icon name="chart"/><span>Progress</span></a></nav>
+      <nav className="mobile-nav" aria-label="Mobile navigation"><a className="active" href="#top"><Icon name="home"/><span>Home</span></a><a href="#workout"><Icon name="dumbbell"/><span>Train</span></a><button aria-label="Log activity" onClick={() => setShowLog(true)}><Icon name="plus"/></button><a href="#nutrition"><Icon name="food"/><span>Food</span></a><a href="#progress"><Icon name="chart"/><span>Progress</span></a></nav>
+
+      {savedMessage && <div className="toast" role="status">✓ {savedMessage}</div>}
+
+      {showSetup && <div className="modal-backdrop"><section className="modal setup-modal" role="dialog" aria-modal="true" aria-labelledby="setup-title"><div className="modal-brand"><span className="brand-mark">B</span> BLACKOUT</div><p className="eyebrow">YOUR PLAN STARTS HERE</p><h2 id="setup-title">What are you working toward?</h2><p className="modal-copy">Three quick details help BlackOut shape your daily targets. You can change these anytime.</p><form onSubmit={finishSetup}><label>First name<input name="name" required placeholder="Darius" autoComplete="given-name"/></label><div className="form-row"><label>Current weight<input name="currentWeight" required type="number" min="70" max="700" placeholder="205"/></label><label>Goal weight<input name="goalWeight" required type="number" min="70" max="700" placeholder="190"/></label></div><label>Primary goal<select name="goal" defaultValue="lose-fat"><option value="lose-fat">Lose body fat</option><option value="build-muscle">Build muscle</option><option value="maintain">Maintain & feel better</option></select></label><label>Training days per week<select name="trainingDays" defaultValue="4"><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></label><button className="form-submit">Build my plan <Icon name="chevron" size={17}/></button></form><small className="privacy-note">Your information stays private and on this device for now.</small></section></div>}
+
+      {showLog && <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setShowLog(false)}><section className="modal log-modal" role="dialog" aria-modal="true" aria-labelledby="log-title"><button className="modal-close" onClick={() => setShowLog(false)} aria-label="Close">×</button><p className="eyebrow">QUICK LOG</p><h2 id="log-title">Add today&apos;s activity</h2><div className="log-tabs">{(["weight","meal","workout"] as const).map((type) => <button key={type} className={logType === type ? "active" : ""} onClick={() => setLogType(type)}>{type}</button>)}</div><form onSubmit={saveLog}>{logType === "weight" && <><label>Weight (lb)<input name="weight" type="number" step="0.1" required placeholder="204.8" autoFocus/></label><label>Optional note<input name="note" placeholder="Morning check-in"/></label></>}{logType === "meal" && <><label>Meal name<input name="meal" required placeholder="Chicken rice bowl" autoFocus/></label><div className="form-row three"><label>Calories<input name="calories" type="number" required placeholder="520"/></label><label>Protein<input name="protein" type="number" placeholder="42"/></label><label>Carbs<input name="carbs" type="number" placeholder="58"/></label></div></>}{logType === "workout" && <><label>Workout<input name="workout" required placeholder="Push day" autoFocus/></label><div className="form-row"><label>Duration (min)<input name="duration" type="number" required placeholder="55"/></label><label>Effort<select name="effort" defaultValue="strong"><option value="easy">Easy</option><option value="solid">Solid</option><option value="strong">Strong</option><option value="max">All out</option></select></label></div></>}<button className="form-submit">Save {logType}</button></form></section></div>}
     </div>
   );
 }
