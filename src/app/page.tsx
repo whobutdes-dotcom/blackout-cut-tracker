@@ -1,6 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { AuthSession, db, getSession, signIn, signOut, signUp } from "@/lib/supabase";
+
+type Competition = { id: string; name: string; invite_code: string; ends_at: string };
 
 type IconName = "home" | "dumbbell" | "food" | "chart" | "sparkles" | "plus" | "flame" | "clock" | "chevron" | "trophy";
 
@@ -41,6 +44,12 @@ export default function Home() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [workoutRunning, setWorkoutRunning] = useState(false);
   const [mealProjection, setMealProjection] = useState<string | null>(null);
+  const [session, setSession] = useState<AuthSession | null | undefined>(undefined);
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signup");
+  const [authMessage, setAuthMessage] = useState("");
+  const [competition, setCompetition] = useState<Competition | null>(null);
+  const [joinCode, setJoinCode] = useState("");
+  const [sharedLeaders, setSharedLeaders] = useState<{ name: string; points: number; detail: string; you?: boolean }[]>([]);
 
   useEffect(() => {
     const checkProfile = window.setTimeout(() => {
@@ -48,6 +57,15 @@ export default function Home() {
     }, 0);
     return () => window.clearTimeout(checkProfile);
   }, []);
+
+  useEffect(() => {
+    getSession().then(setSession);
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    loadSharedData(session);
+  }, [session]);
 
   useEffect(() => {
     const restore = window.setTimeout(() => {
@@ -78,12 +96,72 @@ export default function Home() {
   }, [workoutRunning, workoutName, intensity, elapsedSeconds]);
 
   const workoutPoints = useMemo(() => logs.filter((entry) => entry.type === "workout").reduce((total, entry) => total + Number(entry.points ?? 0), 0), [logs]);
-  const leaderboard = useMemo(() => [
+  const demoLeaderboard = useMemo(() => [
     { name: "Maya", points: 84, detail: "4 verified workouts" },
     { name: "Darius (you)", points: workoutPoints, detail: `${logs.filter((entry) => entry.type === "workout").length} verified workouts`, you: true },
     { name: "Chris", points: 61, detail: "3 verified workouts" },
     { name: "Jordan", points: 48, detail: "3 verified workouts" },
   ].sort((a, b) => b.points - a.points), [logs, workoutPoints]);
+  const leaderboard = sharedLeaders.length ? sharedLeaders : demoLeaderboard;
+
+  async function loadSharedData(activeSession: AuthSession) {
+    try {
+      const competitions = await db<Competition[]>("competitions?select=id,name,invite_code,ends_at&order=created_at.desc&limit=1", activeSession);
+      const activeCompetition = competitions[0] ?? null;
+      setCompetition(activeCompetition);
+      if (!activeCompetition) return;
+      const members = await db<{ user_id: string; profiles: { display_name: string } | null }[]>(`competition_members?competition_id=eq.${activeCompetition.id}&select=user_id,profiles(display_name)`, activeSession);
+      const workouts = await db<{ user_id: string; points: number }[]>(`workouts?competition_id=eq.${activeCompetition.id}&select=user_id,points`, activeSession);
+      setSharedLeaders(members.map((member) => ({
+        name: member.user_id === activeSession.user.id ? `${member.profiles?.display_name ?? "You"} (you)` : member.profiles?.display_name ?? "Member",
+        points: workouts.filter((workout) => workout.user_id === member.user_id).reduce((sum, workout) => sum + workout.points, 0),
+        detail: `${workouts.filter((workout) => workout.user_id === member.user_id).length} verified workouts`,
+        you: member.user_id === activeSession.user.id,
+      })).sort((a, b) => b.points - a.points));
+    } catch (error) {
+      setSavedMessage(error instanceof Error ? error.message : "Could not refresh competition.");
+    }
+  }
+
+  async function handleAuth(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAuthMessage("");
+    const data = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
+    try {
+      if (authMode === "signup") {
+        const result = await signUp(data.email, data.password, data.displayName);
+        if (!result.access_token) {
+          setAuthMessage("Check your email to confirm your account, then come back and sign in.");
+          setAuthMode("signin");
+          return;
+        }
+      }
+      setSession(await signIn(data.email, data.password));
+    } catch (error) {
+      setAuthMessage(error instanceof Error ? error.message : "Unable to continue.");
+    }
+  }
+
+  async function createCompetition() {
+    if (!session) return;
+    try {
+      const created = await db<Competition[]>("competitions?select=id,name,invite_code,ends_at", session, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ owner_id: session.user.id, name: "BlackOut League" }) });
+      setCompetition(created[0]);
+      await loadSharedData(session);
+      setSavedMessage("Your 4-week league is ready.");
+    } catch (error) { setSavedMessage(error instanceof Error ? error.message : "Could not create league."); }
+  }
+
+  async function joinCompetition(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session || !joinCode.trim()) return;
+    try {
+      await db("rpc/join_competition", session, { method: "POST", body: JSON.stringify({ code: joinCode.trim() }) });
+      setJoinCode("");
+      await loadSharedData(session);
+      setSavedMessage("You joined the league.");
+    } catch (error) { setSavedMessage(error instanceof Error ? error.message : "Could not join league."); }
+  }
 
   function formatTime(total: number) {
     const minutes = Math.floor(total / 60).toString().padStart(2, "0");
@@ -96,11 +174,21 @@ export default function Home() {
     setWorkoutRunning(true);
   }
 
-  function finishWorkout() {
+  async function finishWorkout() {
     const minutes = Math.max(1, Math.round(elapsedSeconds / 60));
     const intensityBonus = intensity === "hard" ? 4 : intensity === "moderate" ? 2 : 0;
     const points = 10 + Math.min(12, Math.floor(minutes / 5)) + intensityBonus;
-    const entry = { type: "workout", date: new Date().toISOString(), workout: workoutName, duration: String(minutes), intensity, points: String(points), verified: "true" };
+    const now = new Date();
+    const entry = { type: "workout", date: now.toISOString(), workout: workoutName, duration: String(minutes), intensity, points: String(points), verified: "true" };
+    if (session) {
+      try {
+        const saved = await db<{ points: number }[]>("workouts?select=points", session, { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ user_id: session.user.id, competition_id: competition?.id ?? null, workout_name: workoutName, intensity, duration_seconds: Math.max(60, elapsedSeconds), started_at: new Date(now.getTime() - Math.max(60, elapsedSeconds) * 1000).toISOString(), completed_at: now.toISOString() }) });
+        entry.points = String(saved[0]?.points ?? points);
+      } catch (error) {
+        setSavedMessage(error instanceof Error ? error.message : "Workout could not be saved.");
+        return;
+      }
+    }
     const nextLogs = [entry, ...logs];
     setLogs(nextLogs);
     window.localStorage.setItem("blackout-logs", JSON.stringify(nextLogs));
@@ -110,6 +198,7 @@ export default function Home() {
     setShowLog(false);
     setSavedMessage(`Workout verified · +${points} points`);
     window.setTimeout(() => setSavedMessage(""), 3000);
+    if (session) await loadSharedData(session);
   }
 
   function finishSetup(event: React.FormEvent<HTMLFormElement>) {
@@ -121,10 +210,20 @@ export default function Home() {
     window.setTimeout(() => setSavedMessage(""), 2400);
   }
 
-  function saveLog(event: React.FormEvent<HTMLFormElement>) {
+  async function saveLog(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const entry = { type: logType, date: new Date().toISOString(), ...Object.fromEntries(new FormData(event.currentTarget)) };
+    const values = Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string>;
+    const entry: Record<string, string> = { type: logType, date: new Date().toISOString(), ...values };
     const nextLogs = [entry as Record<string, string>, ...logs];
+    if (session) {
+      try {
+        if (logType === "weight") await db("weight_logs", session, { method: "POST", body: JSON.stringify({ user_id: session.user.id, weight: Number(entry.weight) }) });
+        if (logType === "meal") await db("meals", session, { method: "POST", body: JSON.stringify({ user_id: session.user.id, meal_name: entry.meal, calories: Number(entry.calories), protein: Number(entry.protein || 0), carbs: Number(entry.carbs || 0) }) });
+      } catch (error) {
+        setSavedMessage(error instanceof Error ? error.message : "Activity could not be saved.");
+        return;
+      }
+    }
     setLogs(nextLogs);
     window.localStorage.setItem("blackout-logs", JSON.stringify(nextLogs));
     if (logType === "meal") {
@@ -158,7 +257,7 @@ export default function Home() {
           <a className="nav-link" href="#coach"><Icon name="sparkles"/>AI Coach</a>
         </nav>
         <div className="cut-card"><span>Current phase</span><strong>Summer Cut</strong><div className="cut-row"><span>Week 4 of 12</span><b>33%</b></div><div className="cut-track"><i/></div></div>
-        <div className="profile"><div className="avatar">DJ</div><div><strong>Darius</strong><span>View profile</span></div><Icon name="chevron" size={16}/></div>
+        <button className="profile" onClick={async () => { if (session) await signOut(session); setSession(null); }}><div className="avatar">{(session?.user.user_metadata?.display_name ?? "DJ").slice(0, 2).toUpperCase()}</div><div><strong>{session?.user.user_metadata?.display_name ?? "Darius"}</strong><span>{session ? "Sign out" : "View profile"}</span></div><Icon name="chevron" size={16}/></button>
       </aside>
 
       <main id="top" className="dashboard">
@@ -194,7 +293,7 @@ export default function Home() {
         </section>
 
         <section id="competition" className="panel competition-panel">
-          <div className="competition-intro"><p className="eyebrow">4-WEEK FRIENDS TRIAL</p><h2>BlackOut League</h2><p>Points come from verified workout time, completion, and intensity. Workout minutes are capped in the score so consistency beats marathon sessions.</p><button className="invite-button" onClick={() => { navigator.clipboard?.writeText(window.location.href); setSavedMessage("Trial invite link copied."); window.setTimeout(() => setSavedMessage(""), 2400); }}>Invite friends</button></div>
+          <div className="competition-intro"><p className="eyebrow">4-WEEK FRIENDS TRIAL</p><h2>{competition?.name ?? "BlackOut League"}</h2><p>Points come from verified workout time, completion, and intensity. Workout minutes are capped in the score so consistency beats marathon sessions.</p>{competition ? <><div className="invite-code"><span>INVITE CODE</span><strong>{competition.invite_code}</strong></div><button className="invite-button" onClick={() => { navigator.clipboard?.writeText(competition.invite_code); setSavedMessage("Invite code copied."); window.setTimeout(() => setSavedMessage(""), 2400); }}>Copy invite code</button></> : <><button className="invite-button" onClick={createCompetition}>Create my league</button><form className="join-form" onSubmit={joinCompetition}><input aria-label="Friend invite code" value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="Enter friend code"/><button>Join</button></form></>}</div>
           <div className="leaderboard">{leaderboard.map((person, index) => <div className={person.you ? "leader-row you" : "leader-row"} key={person.name}><b>{index + 1}</b><span><strong>{person.name}</strong><small>{person.detail}</small></span><em>{person.points} pts</em></div>)}</div>
         </section>
       </main>
@@ -202,6 +301,8 @@ export default function Home() {
       <nav className="mobile-nav" aria-label="Mobile navigation"><a className="active" href="#top"><Icon name="home"/><span>Home</span></a><a href="#workout"><Icon name="dumbbell"/><span>Train</span></a><button aria-label="Log activity" onClick={() => setShowLog(true)}><Icon name="plus"/></button><a href="#nutrition"><Icon name="food"/><span>Food</span></a><a href="#competition"><Icon name="trophy"/><span>Compete</span></a></nav>
 
       {savedMessage && <div className="toast" role="status">✓ {savedMessage}</div>}
+
+      {session === null && <div className="modal-backdrop auth-backdrop"><section className="modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title"><div className="modal-brand"><span className="brand-mark">B</span> BLACKOUT</div><p className="eyebrow">FRIENDS TRIAL</p><h2 id="auth-title">{authMode === "signup" ? "Create your account" : "Welcome back"}</h2><p className="modal-copy">Your verified workouts, nutrition, and competition score will sync securely across devices.</p><form onSubmit={handleAuth}>{authMode === "signup" && <label>Display name<input name="displayName" required placeholder="Darius" autoComplete="name"/></label>}<label>Email<input name="email" required type="email" placeholder="you@example.com" autoComplete="email"/></label><label>Password<input name="password" required type="password" minLength={8} placeholder="At least 8 characters" autoComplete={authMode === "signup" ? "new-password" : "current-password"}/></label>{authMessage && <p className="auth-message" role="status">{authMessage}</p>}<button className="form-submit">{authMode === "signup" ? "Create account" : "Sign in"}</button></form><button className="auth-switch" onClick={() => { setAuthMode(authMode === "signup" ? "signin" : "signup"); setAuthMessage(""); }}>{authMode === "signup" ? "Already have an account? Sign in" : "New here? Create an account"}</button><small className="privacy-note">Never share your password or confirmation code.</small></section></div>}
 
       {showSetup && <div className="modal-backdrop"><section className="modal setup-modal" role="dialog" aria-modal="true" aria-labelledby="setup-title"><div className="modal-brand"><span className="brand-mark">B</span> BLACKOUT</div><p className="eyebrow">YOUR PLAN STARTS HERE</p><h2 id="setup-title">What are you working toward?</h2><p className="modal-copy">Three quick details help BlackOut shape your daily targets. You can change these anytime.</p><form onSubmit={finishSetup}><label>First name<input name="name" required placeholder="Darius" autoComplete="given-name"/></label><div className="form-row"><label>Current weight<input name="currentWeight" required type="number" min="70" max="700" placeholder="205"/></label><label>Goal weight<input name="goalWeight" required type="number" min="70" max="700" placeholder="190"/></label></div><label>Primary goal<select name="goal" defaultValue="lose-fat"><option value="lose-fat">Lose body fat</option><option value="build-muscle">Build muscle</option><option value="maintain">Maintain & feel better</option></select></label><label>Training days per week<select name="trainingDays" defaultValue="4"><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select></label><button className="form-submit">Build my plan <Icon name="chevron" size={17}/></button></form><small className="privacy-note">Your information stays private and on this device for now.</small></section></div>}
 
